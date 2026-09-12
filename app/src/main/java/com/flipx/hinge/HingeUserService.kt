@@ -274,7 +274,7 @@ class HingeUserService : IUserService.Stub {
         private const val TAG = "FlipxHinge"
         private const val FLIPX_PKG = "com.flipx.hinge"
 
-        private const val EVENT_DEVICE = "/dev/input/event2"
+        private const val EVENT_DEVICE = "/dev/input/event1"
         private const val EV_KEY = 0x01
         private const val KEY_F12 = 0x58
         private const val KEY_F9  = 0x43
