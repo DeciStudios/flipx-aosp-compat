@@ -14,6 +14,8 @@ class HingeUserService : IUserService.Stub {
     @Volatile private var lastEvent: String = "none"
     @Volatile private var openLauncherPkg: String = ""
     @Volatile private var closeLauncherPkg: String = ""
+    @Volatile private var eventDevice: String = "/dev/input/event1"
+    @Volatile private var useSu: Boolean = false
 
     @Volatile private var orientationLockEnabled: Boolean = false
     @Volatile private var currentlyOpen: Boolean = true  // best-effort cache of last seen state
@@ -42,14 +44,33 @@ class HingeUserService : IUserService.Stub {
 
     override fun lastEvent(): String = lastEvent
 
+    override fun setEventDevice(device: String?) {
+        val newDevice = device.orEmpty().ifEmpty { "/dev/input/event1" }
+        if (eventDevice != newDevice) {
+            eventDevice = newDevice
+            Log.i(TAG, "event device changed to $newDevice")
+            if (isRunning()) {
+                stopWatch()
+                startWatch()
+            }
+        }
+    }
+
+    override fun setUseSu(enabled: Boolean) {
+        useSu = enabled
+        Log.i(TAG, "useSu := $enabled")
+    }
+
     override fun setHomeHolder(pkg: String?): Boolean {
         val target = pkg.orEmpty()
         if (target.isEmpty()) return false
         return try {
-            val proc = ProcessBuilder(
-                "/system/bin/cmd", "role", "add-role-holder",
-                "android.app.role.HOME", target
-            ).redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/cmd role add-role-holder android.app.role.HOME $target")
+            } else {
+                listOf("/system/bin/cmd", "role", "add-role-holder", "android.app.role.HOME", target)
+            }
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
             proc.waitFor()
             proc.exitValue() == 0
         } catch (e: Exception) {
@@ -60,10 +81,12 @@ class HingeUserService : IUserService.Stub {
 
     override fun currentHomeHolder(): String {
         return try {
-            val proc = ProcessBuilder(
-                "/system/bin/cmd", "role", "get-role-holders",
-                "android.app.role.HOME"
-            ).redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/cmd role get-role-holders android.app.role.HOME")
+            } else {
+                listOf("/system/bin/cmd", "role", "get-role-holders", "android.app.role.HOME")
+            }
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
             val out = proc.inputStream.bufferedReader().readText().trim()
             proc.waitFor()
             out.substringAfterLast(":").trim()
@@ -86,13 +109,12 @@ class HingeUserService : IUserService.Stub {
             // Reorder-to-front + single-top: if the target's task already exists, bring
             // it forward without restarting the activity. Prevents the "ES-DE reloads
             // every flip" symptom when both launchers are warm in memory.
-            val proc = ProcessBuilder(
-                "/system/bin/am", "start",
-                "-a", "android.intent.action.MAIN",
-                "--activity-reorder-to-front",
-                "--activity-single-top",
-                "-n", target
-            ).redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/am start -a android.intent.action.MAIN --activity-reorder-to-front --activity-single-top -n $target")
+            } else {
+                listOf("/system/bin/am", "start", "-a", "android.intent.action.MAIN", "--activity-reorder-to-front", "--activity-single-top", "-n", target)
+            }
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
             proc.waitFor()
             val ok = proc.exitValue() == 0
             if (!ok) {
@@ -130,7 +152,12 @@ class HingeUserService : IUserService.Stub {
 
     private fun runWm(vararg args: String) {
         try {
-            val proc = ProcessBuilder("/system/bin/wm", *args)
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/wm " + args.joinToString(" "))
+            } else {
+                listOf("/system/bin/wm", *args)
+            }
+            val proc = ProcessBuilder(cmd)
                 .redirectErrorStream(true).start()
             proc.waitFor()
             if (proc.exitValue() != 0) {
@@ -147,7 +174,12 @@ class HingeUserService : IUserService.Stub {
     private fun runWatcher() {
         while (watcherThread != null) {
             try {
-                val proc = ProcessBuilder("/system/bin/getevent", EVENT_DEVICE)
+                val cmd = if (useSu) {
+                    listOf("su", "-c", "/system/bin/getevent $eventDevice")
+                } else {
+                    listOf("/system/bin/getevent", eventDevice)
+                }
+                val proc = ProcessBuilder(cmd)
                     .redirectErrorStream(true).start()
                 watcherProcess = proc
                 val reader = BufferedReader(InputStreamReader(proc.inputStream))
@@ -217,7 +249,12 @@ class HingeUserService : IUserService.Stub {
     }
 
     private fun currentForegroundPackage(): String? = try {
-        val proc = ProcessBuilder("/system/bin/dumpsys", "window")
+        val cmd = if (useSu) {
+            listOf("su", "-c", "/system/bin/dumpsys window")
+        } else {
+            listOf("/system/bin/dumpsys", "window")
+        }
+        val proc = ProcessBuilder(cmd)
             .redirectErrorStream(true).start()
         val out = proc.inputStream.bufferedReader().readText()
         proc.waitFor()
@@ -232,11 +269,12 @@ class HingeUserService : IUserService.Stub {
 
     private fun goHome() {
         try {
-            ProcessBuilder(
-                "/system/bin/am", "start",
-                "-a", "android.intent.action.MAIN",
-                "-c", "android.intent.category.HOME"
-            ).redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/am start -a android.intent.action.MAIN -c android.intent.category.HOME")
+            } else {
+                listOf("/system/bin/am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME")
+            }
+            ProcessBuilder(cmd).redirectErrorStream(true).start()
         } catch (e: Exception) {
             Log.w(TAG, "goHome failed: ${e.message}")
         }
@@ -245,12 +283,12 @@ class HingeUserService : IUserService.Stub {
     private fun writeState(open: Boolean) {
         try {
             val action = if (open) ACTION_OPEN else ACTION_CLOSE
-            val proc = ProcessBuilder(
-                "/system/bin/am", "broadcast",
-                "--include-stopped-packages",
-                "-n", "com.flipx.hinge/.HingeReceiver",
-                "-a", action
-            ).redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/am broadcast --include-stopped-packages -n com.flipx.hinge/.HingeReceiver -a $action")
+            } else {
+                listOf("/system/bin/am", "broadcast", "--include-stopped-packages", "-n", "com.flipx.hinge/.HingeReceiver", "-a", action)
+            }
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
             proc.waitFor()
             if (proc.exitValue() != 0) {
                 val out = proc.inputStream.bufferedReader().readText().trim()
@@ -263,8 +301,12 @@ class HingeUserService : IUserService.Stub {
 
     private fun broadcast(action: String) {
         try {
-            ProcessBuilder("/system/bin/am", "broadcast", "-a", action)
-                .redirectErrorStream(true).start()
+            val cmd = if (useSu) {
+                listOf("su", "-c", "/system/bin/am broadcast -a $action")
+            } else {
+                listOf("/system/bin/am", "broadcast", "-a", action)
+            }
+            ProcessBuilder(cmd).redirectErrorStream(true).start()
         } catch (e: Exception) {
             Log.w(TAG, "external broadcast failed: ${e.message}")
         }
@@ -274,7 +316,6 @@ class HingeUserService : IUserService.Stub {
         private const val TAG = "FlipxHinge"
         private const val FLIPX_PKG = "com.flipx.hinge"
 
-        private const val EVENT_DEVICE = "/dev/input/event1"
         private const val EV_KEY = 0x01
         private const val KEY_F12 = 0x58
         private const val KEY_F9  = 0x43

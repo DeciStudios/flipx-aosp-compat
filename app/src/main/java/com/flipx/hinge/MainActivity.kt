@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -36,6 +37,9 @@ class MainActivity : AppCompatActivity(), ShizukuBridge.Listener {
         binding.txtLauncherOpen.setOnClickListener { pickLauncher(true) }
         binding.txtLauncherClose.setOnClickListener { pickLauncher(false) }
         binding.btnMakeHome.setOnClickListener { makeFlipxHome() }
+
+        binding.txtServiceMode.setOnClickListener { pickServiceMode() }
+        binding.txtEventDevice.setOnClickListener { pickEventDevice() }
 
         binding.swForceRotation.isChecked = Prefs.orientationLock(this)
         binding.swForceRotation.setOnCheckedChangeListener { _, isChecked ->
@@ -73,6 +77,11 @@ class MainActivity : AppCompatActivity(), ShizukuBridge.Listener {
     private enum class Stage { NotInstalled, NotRunning, NotGranted, NotBound, Ready }
 
     private fun stage(): Stage {
+        if (Prefs.serviceMode(this) == "root") {
+            val svc = ShizukuBridge.service
+            val running = runCatching { svc?.isRunning ?: false }.getOrDefault(false)
+            return if (running) Stage.Ready else Stage.NotBound
+        }
         if (!isShizukuInstalled()) return Stage.NotInstalled
         if (!ShizukuBridge.isShizukuAlive()) return Stage.NotRunning
         if (!ShizukuBridge.hasPermission()) return Stage.NotGranted
@@ -89,6 +98,7 @@ class MainActivity : AppCompatActivity(), ShizukuBridge.Listener {
     }
 
     private fun render() {
+        val mode = Prefs.serviceMode(this)
         val s = stage()
         val svc = ShizukuBridge.service
         val last = runCatching { svc?.lastEvent() ?: "—" }.getOrDefault("—")
@@ -96,10 +106,22 @@ class MainActivity : AppCompatActivity(), ShizukuBridge.Listener {
         val flipxIsHome = homeHolder == packageName
         val hingeOpen = Prefs.isHingeOpen(this)
 
-        binding.txtShizukuInstalled.text = "Shizuku installed: ${yesNo(isShizukuInstalled())}"
-        binding.txtShizuku.text          = "Shizuku running:   ${yesNo(ShizukuBridge.isShizukuAlive())}"
-        binding.txtPerm.text             = "Permission:        ${yesNo(ShizukuBridge.hasPermission())}"
-        binding.txtBound.text            = "UserService bound: ${yesNo(svc != null)}"
+        binding.txtServiceMode.text = if (mode == "root") getString(R.string.service_mode_root) else getString(R.string.service_mode_shizuku)
+        binding.txtEventDevice.text = Prefs.eventDevice(this)
+
+        if (mode == "root") {
+            binding.txtShizukuInstalled.visibility = View.GONE
+            binding.txtShizuku.visibility = View.GONE
+            binding.txtPerm.text             = "Service Mode:      Magisk (Root)"
+        } else {
+            binding.txtShizukuInstalled.visibility = View.VISIBLE
+            binding.txtShizuku.visibility = View.VISIBLE
+            binding.txtShizukuInstalled.text = "Shizuku installed: ${yesNo(isShizukuInstalled())}"
+            binding.txtShizuku.text          = "Shizuku running:   ${yesNo(ShizukuBridge.isShizukuAlive())}"
+            binding.txtPerm.text             = "Permission:        ${yesNo(ShizukuBridge.hasPermission())}"
+        }
+
+        binding.txtBound.text            = "Service bound:     ${yesNo(svc != null)}"
         binding.txtWatch.text            = "Watcher active:    ${yesNo(s == Stage.Ready)}"
         binding.txtHingeState.text       = "Hinge state:       ${if (hingeOpen) "open" else "closed"}"
         binding.txtLast.text             = "Last event: $last"
@@ -108,51 +130,104 @@ class MainActivity : AppCompatActivity(), ShizukuBridge.Listener {
         binding.txtLauncherClose.text = Launchers.labelFor(this, Prefs.closeLauncher(this))
 
         binding.txtHomeHolder.text = when {
-            homeHolder.isEmpty() -> "Current home: (unknown — bind Shizuku to check)"
+            homeHolder.isEmpty() -> "Current home: (unknown — check daemon)"
             flipxIsHome -> "Current home: flipx ✓"
             else -> "Current home: $homeHolder"
         }
         binding.btnMakeHome.isEnabled = svc != null && !flipxIsHome
 
-        when (s) {
-            Stage.NotInstalled -> {
-                binding.txtPrereq.setText(R.string.prereq_body)
-                binding.btnPrimary.setText(R.string.btn_install_shizuku)
-                binding.btnPrimary.setOnClickListener { openPlayStore(SHIZUKU_PKG) }
-                binding.btnSecondary.visibility = View.GONE
-                binding.btnStop.visibility = View.GONE
+        if (mode == "root") {
+            binding.txtPrereq.text = "Running with root privileges via Magisk. The hinge event watcher process communicates natively."
+            binding.btnPrimary.visibility = View.GONE
+            binding.btnSecondary.visibility = View.GONE
+            binding.btnStop.visibility = if (s == Stage.Ready) View.VISIBLE else View.GONE
+        } else {
+            when (s) {
+                Stage.NotInstalled -> {
+                    binding.txtPrereq.setText(R.string.prereq_body)
+                    binding.btnPrimary.setText(R.string.btn_install_shizuku)
+                    binding.btnPrimary.setOnClickListener { openPlayStore(SHIZUKU_PKG) }
+                    binding.btnSecondary.visibility = View.GONE
+                    binding.btnStop.visibility = View.GONE
+                }
+                Stage.NotRunning -> {
+                    binding.txtPrereq.setText(R.string.prereq_body_start)
+                    binding.btnPrimary.setText(R.string.btn_open_shizuku)
+                    binding.btnPrimary.setOnClickListener { openShizuku() }
+                    binding.btnSecondary.visibility = View.GONE
+                    binding.btnStop.visibility = View.GONE
+                }
+                Stage.NotGranted -> {
+                    binding.txtPrereq.setText(R.string.prereq_body_grant)
+                    binding.btnPrimary.setText(R.string.btn_grant)
+                    binding.btnPrimary.setOnClickListener { ShizukuBridge.tryBindOrRequest() }
+                    binding.btnSecondary.visibility = View.VISIBLE
+                    binding.btnSecondary.setText(R.string.btn_open_shizuku)
+                    binding.btnSecondary.setOnClickListener { openShizuku() }
+                    binding.btnStop.visibility = View.GONE
+                }
+                Stage.NotBound -> {
+                    binding.txtPrereq.setText(R.string.prereq_body_bind)
+                    binding.btnPrimary.setText(R.string.btn_bind)
+                    binding.btnPrimary.setOnClickListener { ShizukuBridge.tryBindOrRequest() }
+                    binding.btnSecondary.visibility = View.GONE
+                    binding.btnStop.visibility = View.GONE
+                }
+                Stage.Ready -> {
+                    binding.txtPrereq.setText(R.string.prereq_body_ready)
+                    binding.btnPrimary.visibility = View.GONE
+                    binding.btnSecondary.visibility = View.GONE
+                    binding.btnStop.visibility = View.VISIBLE
+                }
             }
-            Stage.NotRunning -> {
-                binding.txtPrereq.setText(R.string.prereq_body_start)
-                binding.btnPrimary.setText(R.string.btn_open_shizuku)
-                binding.btnPrimary.setOnClickListener { openShizuku() }
-                binding.btnSecondary.visibility = View.GONE
-                binding.btnStop.visibility = View.GONE
-            }
-            Stage.NotGranted -> {
-                binding.txtPrereq.setText(R.string.prereq_body_grant)
-                binding.btnPrimary.setText(R.string.btn_grant)
-                binding.btnPrimary.setOnClickListener { ShizukuBridge.tryBindOrRequest() }
-                binding.btnSecondary.visibility = View.VISIBLE
-                binding.btnSecondary.setText(R.string.btn_open_shizuku)
-                binding.btnSecondary.setOnClickListener { openShizuku() }
-                binding.btnStop.visibility = View.GONE
-            }
-            Stage.NotBound -> {
-                binding.txtPrereq.setText(R.string.prereq_body_bind)
-                binding.btnPrimary.setText(R.string.btn_bind)
-                binding.btnPrimary.setOnClickListener { ShizukuBridge.tryBindOrRequest() }
-                binding.btnSecondary.visibility = View.GONE
-                binding.btnStop.visibility = View.GONE
-            }
-            Stage.Ready -> {
-                binding.txtPrereq.setText(R.string.prereq_body_ready)
-                binding.btnPrimary.visibility = View.GONE
-                binding.btnSecondary.visibility = View.GONE
-                binding.btnStop.visibility = View.VISIBLE
-            }
+            if (s != Stage.Ready) binding.btnPrimary.visibility = View.VISIBLE
         }
-        if (s != Stage.Ready) binding.btnPrimary.visibility = View.VISIBLE
+    }
+
+    private fun pickServiceMode() {
+        val modes = arrayOf(getString(R.string.service_mode_shizuku), getString(R.string.service_mode_root))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.service_mode_label)
+            .setItems(modes) { _, which ->
+                val newMode = if (which == 0) "shizuku" else "root"
+                ShizukuBridge.switchMode(this, newMode)
+                render()
+            }
+            .show()
+    }
+
+    private fun pickEventDevice() {
+        val common = arrayOf("/dev/input/event0", "/dev/input/event1", "/dev/input/event2", "/dev/input/event3", "/dev/input/event4", "/dev/input/event5", getString(R.string.event_id_custom))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.event_id_picker_title)
+            .setItems(common) { _, which ->
+                if (which == common.size - 1) {
+                    showCustomEventDeviceDialog()
+                } else {
+                    Prefs.setEventDevice(this, common[which])
+                    ShizukuBridge.pushEventDevice(this)
+                    render()
+                }
+            }
+            .show()
+    }
+
+    private fun showCustomEventDeviceDialog() {
+        val input = EditText(this)
+        input.setText(Prefs.eventDevice(this))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.event_id_custom)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val newPath = input.text.toString().trim()
+                if (newPath.isNotEmpty()) {
+                    Prefs.setEventDevice(this, newPath)
+                    ShizukuBridge.pushEventDevice(this)
+                    render()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun pickLauncher(forOpen: Boolean) {

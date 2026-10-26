@@ -30,4 +30,13 @@
     <string name="rotation_header">Rotation</string>
     <string name="rotation_label">Lock orientation to hinge state</string>
     <string name="rotation_note">When on: closing the hinge locks landscape; opening the hinge locks 90° counter-clockwise of that. Both directions stay locked so routed apps don\'t auto-rotate. When off, flipx never touches rotation.</string>
+
+    <string name="service_mode_header">Service Mode</string>
+    <string name="service_mode_label">Select background communication layer</string>
+    <string name="service_mode_shizuku">Shizuku (No Root)</string>
+    <string name="service_mode_root">Magisk (Root)</string>
+    <string name="event_id_header">Input Event Device</string>
+    <string name="event_id_label">Device path to watch for hinge events:</string>
+    <string name="event_id_picker_title">Choose Input Device Path</string>
+    <string name="event_id_custom">Custom path&#8230;</string>
 </resources>

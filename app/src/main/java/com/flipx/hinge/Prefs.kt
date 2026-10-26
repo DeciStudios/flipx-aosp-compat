@@ -8,6 +8,8 @@ object Prefs {
     private const val KEY_CLOSE = "close_launcher_pkg"
     private const val KEY_HINGE_OPEN = "hinge_is_open"
     private const val KEY_ORIENTATION_LOCK = "orientation_lock"
+    private const val KEY_SERVICE_MODE = "service_mode"
+    private const val KEY_EVENT_DEVICE = "event_device"
 
     private fun prefs(ctx: Context) =
         ctx.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
@@ -40,5 +42,19 @@ object Prefs {
 
     fun setOrientationLock(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_ORIENTATION_LOCK, enabled).apply()
+    }
+
+    fun serviceMode(ctx: Context): String =
+        prefs(ctx).getString(KEY_SERVICE_MODE, "shizuku") ?: "shizuku"
+
+    fun setServiceMode(ctx: Context, mode: String) {
+        prefs(ctx).edit().putString(KEY_SERVICE_MODE, mode).apply()
+    }
+
+    fun eventDevice(ctx: Context): String =
+        prefs(ctx).getString(KEY_EVENT_DEVICE, "/dev/input/event1") ?: "/dev/input/event1"
+
+    fun setEventDevice(ctx: Context, device: String) {
+        prefs(ctx).edit().putString(KEY_EVENT_DEVICE, device).apply()
     }
 }

@@ -18,4 +18,6 @@ interface IUserService {
     void setOrientationLock(boolean enabled) = 8;
 
     boolean launchComponent(String componentName) = 9;
+    void setEventDevice(String device) = 10;
+    void setUseSu(boolean enabled) = 11;
 }

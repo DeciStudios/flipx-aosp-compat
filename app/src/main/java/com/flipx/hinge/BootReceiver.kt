@@ -9,6 +9,8 @@ import android.os.Looper
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         ShizukuBridge.init(context.applicationContext)
+        if (Prefs.serviceMode(context) == "root") return
+
         val h = Handler(Looper.getMainLooper())
         var attempts = 0
         val poll = object : Runnable {

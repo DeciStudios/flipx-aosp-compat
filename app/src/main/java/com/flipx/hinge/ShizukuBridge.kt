@@ -2,6 +2,7 @@ package com.flipx.hinge
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
@@ -20,6 +21,7 @@ object ShizukuBridge {
         private set
 
     @Volatile private var appCtx: Context? = null
+    @Volatile private var rootService: HingeUserService? = null
 
     private val args by lazy {
         Shizuku.UserServiceArgs(
@@ -34,12 +36,17 @@ object ShizukuBridge {
             .version(SERVICE_VERSION)
     }
 
-    private val connection = object : android.content.ServiceConnection {
+    private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             if (binder != null && binder.pingBinder()) {
                 val svc = IUserService.Stub.asInterface(binder)
                 service = svc
                 Log.i(TAG, "UserService connected")
+                runCatching {
+                    appCtx?.let { ctx ->
+                        svc.setEventDevice(Prefs.eventDevice(ctx))
+                    }
+                }.onFailure { Log.w(TAG, "setEventDevice err: ${it.message}") }
                 runCatching { svc.startWatch() }
                     .onFailure { Log.w(TAG, "startWatch err: ${it.message}") }
                 // Sync the user's launcher picks into the daemon's in-memory fields
@@ -60,9 +67,11 @@ object ShizukuBridge {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            service = null
-            Log.i(TAG, "UserService disconnected")
-            listener?.onDisconnected()
+            if (appCtx?.let { Prefs.serviceMode(it) } != "root") {
+                service = null
+                Log.i(TAG, "UserService disconnected")
+                listener?.onDisconnected()
+            }
         }
     }
 
@@ -84,15 +93,61 @@ object ShizukuBridge {
 
     fun init(context: Context) {
         appCtx = context.applicationContext
+        val ctx = context.applicationContext
+        if (Prefs.serviceMode(ctx) == "root") {
+            startRootMode(ctx)
+            return
+        }
         Shizuku.addRequestPermissionResultListener(permListener)
         Shizuku.addBinderReceivedListenerSticky { tryBindOrRequest() }
         Shizuku.addBinderDeadListener {
-            service = null
-            listener?.onDisconnected()
+            if (appCtx?.let { Prefs.serviceMode(it) } != "root") {
+                service = null
+                listener?.onDisconnected()
+            }
+        }
+    }
+
+    fun startRootMode(ctx: Context) {
+        if (rootService == null) {
+            val svc = HingeUserService()
+            svc.setUseSu(true)
+            svc.setEventDevice(Prefs.eventDevice(ctx))
+            svc.setLaunchers(Prefs.openLauncher(ctx), Prefs.closeLauncher(ctx))
+            svc.setOrientationLock(Prefs.orientationLock(ctx))
+            svc.startWatch()
+            rootService = svc
+            service = svc
+            Log.i(TAG, "Root Service started directly")
+            listener?.onConnected()
+        }
+    }
+
+    fun stopRootMode() {
+        rootService?.stopWatch()
+        rootService?.destroy()
+        rootService = null
+        service = null
+        listener?.onDisconnected()
+    }
+
+    fun switchMode(ctx: Context, mode: String) {
+        Prefs.setServiceMode(ctx, mode)
+        if (mode == "root") {
+            unbind()
+            startRootMode(ctx)
+        } else {
+            stopRootMode()
+            tryBindOrRequest()
         }
     }
 
     fun tryBindOrRequest() {
+        val ctx = appCtx ?: return
+        if (Prefs.serviceMode(ctx) == "root") {
+            startRootMode(ctx)
+            return
+        }
         if (!Shizuku.pingBinder()) {
             Log.w(TAG, "Shizuku not running")
             return
@@ -101,6 +156,8 @@ object ShizukuBridge {
     }
 
     fun hasPermission(): Boolean {
+        val ctx = appCtx ?: return false
+        if (Prefs.serviceMode(ctx) == "root") return true
         if (!Shizuku.pingBinder()) return false
         return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
     }
@@ -115,6 +172,13 @@ object ShizukuBridge {
         }.onFailure { Log.w(TAG, "pushLaunchers err: ${it.message}") }
     }
 
+    fun pushEventDevice(ctx: Context) {
+        val svc = service ?: return
+        runCatching {
+            svc.setEventDevice(Prefs.eventDevice(ctx))
+        }.onFailure { Log.w(TAG, "pushEventDevice err: ${it.message}") }
+    }
+
     private fun bind() {
         try {
             Shizuku.bindUserService(args, connection)
@@ -124,7 +188,9 @@ object ShizukuBridge {
     }
 
     fun unbind() {
-        runCatching { Shizuku.unbindUserService(args, connection, true) }
+        if (appCtx?.let { Prefs.serviceMode(it) } != "root") {
+            runCatching { Shizuku.unbindUserService(args, connection, true) }
+        }
         service = null
     }
 }
